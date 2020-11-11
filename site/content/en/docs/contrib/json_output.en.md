@@ -59,7 +59,7 @@ You will need to add your new log in two places:
 
 **Note: It's important that the order of steps matches the expected order they will be called in. So, if you add a step that is supposed to be called after "Preparing Kubernetes", the new step should be place after "Preparing Kubernetes".
 
-Finally, set your new step in the cod by placing this line before you call `out.T`:
+Finally, set your new step in the cod by placing this line before you call `out.Step`:
 
 ```
 register.Reg.SetStep(register.MyNewStep)
@@ -69,5 +69,5 @@ You can see an example of setting the registry step in the code in [config.go](h
 
 ```go
 	register.Reg.SetStep(register.PreparingKubernetes)
-	out.T(cr.Style(), "Preparing Kubernetes {{.k8sVersion}} on {{.runtime}} {{.runtimeVersion}} ...", out.V{"k8sVersion": k8sVersion, "runtime": cr.Name(), "runtimeVersion": version})
+	out.Step(cr.Style(), "Preparing Kubernetes {{.k8sVersion}} on {{.runtime}} {{.runtimeVersion}} ...", out.V{"k8sVersion": k8sVersion, "runtime": cr.Name(), "runtimeVersion": version})
 ```
