@@ -247,152 +247,16 @@ func ClusterFlagValue() string {
 // generateClusterConfig generate a config.ClusterConfig based on flags or existing cluster config
 func generateClusterConfig(cmd *cobra.Command, existing *config.ClusterConfig, k8sVersion string, drvName string) (config.ClusterConfig, config.Node, error) {
 	var cc config.ClusterConfig
+
 	if existing != nil {
 		cc = updateExistingConfigFromFlags(cmd, existing)
 	} else {
 		klog.Info("no existing cluster config was found, will generate one from the flags ")
-		sysLimit, containerLimit, err := memoryLimits(drvName)
-		if err != nil {
-			klog.Warningf("Unable to query memory limits: %+v", err)
-		}
+		cc = initNewClusterConfig(cmd, k8sVersion, drvName)
+	}
 
-		mem := suggestMemoryAllocation(sysLimit, containerLimit, viper.GetInt(nodes))
-		if cmd.Flags().Changed(memory) {
-			var err error
-			mem, err = pkgutil.CalculateSizeInMB(viper.GetString(memory))
-			if err != nil {
-				exit.Message(reason.Usage, "Generate unable to parse memory '{{.memory}}': {{.error}}", out.V{"memory": viper.GetString(memory), "error": err})
-			}
-			if driver.IsKIC(drvName) && mem > containerLimit {
-				exit.Message(reason.Usage, "{{.driver_name}} has only {{.container_limit}}MB memory but you specified {{.specified_memory}}MB", out.V{"container_limit": containerLimit, "specified_memory": mem, "driver_name": driver.FullName(drvName)})
-			}
-		} else {
-			validateRequestedMemorySize(mem, drvName)
-			klog.Infof("Using suggested %dMB memory alloc based on sys=%dMB, container=%dMB", mem, sysLimit, containerLimit)
-		}
-
-		diskSize, err := pkgutil.CalculateSizeInMB(viper.GetString(humanReadableDiskSize))
-		if err != nil {
-			exit.Message(reason.Usage, "Generate unable to parse disk size '{{.diskSize}}': {{.error}}", out.V{"diskSize": viper.GetString(humanReadableDiskSize), "error": err})
-		}
-
-		repository := viper.GetString(imageRepository)
-		mirrorCountry := strings.ToLower(viper.GetString(imageMirrorCountry))
-		if strings.ToLower(repository) == "auto" || (mirrorCountry != "" && repository == "") {
-			found, autoSelectedRepository, err := selectImageRepository(mirrorCountry, semver.MustParse(strings.TrimPrefix(k8sVersion, version.VersionPrefix)))
-			if err != nil {
-				exit.Error(reason.InetRepo, "Failed to check main repository and mirrors for images", err)
-			}
-
-			if !found {
-				if autoSelectedRepository == "" {
-					exit.Message(reason.InetReposUnavailable, "None of the known repositories are accessible. Consider specifying an alternative image repository with --image-repository flag")
-				} else {
-					out.WarningT("None of the known repositories in your location are accessible. Using {{.image_repository_name}} as fallback.", out.V{"image_repository_name": autoSelectedRepository})
-				}
-			}
-
-			repository = autoSelectedRepository
-		}
-
-		if cmd.Flags().Changed(imageRepository) || cmd.Flags().Changed(imageMirrorCountry) {
-			out.Styled(style.Success, "Using image repository {{.name}}", out.V{"name": repository})
-		}
-
-		// Backwards compatibility with --enable-default-cni
-		chosenCNI := viper.GetString(cniFlag)
-		if viper.GetBool(enableDefaultCNI) && !cmd.Flags().Changed(cniFlag) {
-			klog.Errorf("Found deprecated --enable-default-cni flag, setting --cni=bridge")
-			chosenCNI = "bridge"
-		}
-		// networkPlugin cni deprecation warning
-		chosenNetworkPlugin := viper.GetString(networkPlugin)
-		if chosenNetworkPlugin == "cni" {
-			out.WarningT("With --network-plugin=cni, you will need to provide your own CNI. See --cni flag as a user-friendly alternative")
-		}
-
-		if !(driver.IsKIC(drvName) || driver.IsKVM(drvName)) && viper.GetString(network) != "" {
-			out.WarningT("--network flag is only valid with the docker/podman and KVM drivers, it will be ignored")
-		}
-
-		checkNumaCount(k8sVersion)
-
-		cc = config.ClusterConfig{
-			Name:                    ClusterFlagValue(),
-			KeepContext:             viper.GetBool(keepContext),
-			EmbedCerts:              viper.GetBool(embedCerts),
-			MinikubeISO:             viper.GetString(isoURL),
-			KicBaseImage:            viper.GetString(kicBaseImage),
-			Network:                 viper.GetString(network),
-			Memory:                  mem,
-			CPUs:                    viper.GetInt(cpus),
-			DiskSize:                diskSize,
-			Driver:                  drvName,
-			ListenAddress:           viper.GetString(listenAddress),
-			HyperkitVpnKitSock:      viper.GetString(vpnkitSock),
-			HyperkitVSockPorts:      viper.GetStringSlice(vsockPorts),
-			NFSShare:                viper.GetStringSlice(nfsShare),
-			NFSSharesRoot:           viper.GetString(nfsSharesRoot),
-			DockerEnv:               config.DockerEnv,
-			DockerOpt:               config.DockerOpt,
-			InsecureRegistry:        insecureRegistry,
-			RegistryMirror:          registryMirror,
-			HostOnlyCIDR:            viper.GetString(hostOnlyCIDR),
-			HypervVirtualSwitch:     viper.GetString(hypervVirtualSwitch),
-			HypervUseExternalSwitch: viper.GetBool(hypervUseExternalSwitch),
-			HypervExternalAdapter:   viper.GetString(hypervExternalAdapter),
-			KVMNetwork:              viper.GetString(kvmNetwork),
-			KVMQemuURI:              viper.GetString(kvmQemuURI),
-			KVMGPU:                  viper.GetBool(kvmGPU),
-			KVMHidden:               viper.GetBool(kvmHidden),
-			KVMNUMACount:            viper.GetInt(kvmNUMACount),
-			DisableDriverMounts:     viper.GetBool(disableDriverMounts),
-			UUID:                    viper.GetString(uuid),
-			NoVTXCheck:              viper.GetBool(noVTXCheck),
-			DNSProxy:                viper.GetBool(dnsProxy),
-			HostDNSResolver:         viper.GetBool(hostDNSResolver),
-			HostOnlyNicType:         viper.GetString(hostOnlyNicType),
-			NatNicType:              viper.GetString(natNicType),
-			StartHostTimeout:        viper.GetDuration(waitTimeout),
-			ExposedPorts:            viper.GetStringSlice(ports),
-			SSHIPAddress:            viper.GetString(sshIPAddress),
-			SSHUser:                 viper.GetString(sshSSHUser),
-			SSHKey:                  viper.GetString(sshSSHKey),
-			SSHPort:                 viper.GetInt(sshSSHPort),
-			KubernetesConfig: config.KubernetesConfig{
-				KubernetesVersion:      k8sVersion,
-				ClusterName:            ClusterFlagValue(),
-				Namespace:              viper.GetString(startNamespace),
-				APIServerName:          viper.GetString(apiServerName),
-				APIServerNames:         apiServerNames,
-				APIServerIPs:           apiServerIPs,
-				DNSDomain:              viper.GetString(dnsDomain),
-				FeatureGates:           viper.GetString(featureGates),
-				ContainerRuntime:       viper.GetString(containerRuntime),
-				CRISocket:              viper.GetString(criSocket),
-				NetworkPlugin:          chosenNetworkPlugin,
-				ServiceCIDR:            viper.GetString(serviceCIDR),
-				ImageRepository:        repository,
-				ExtraOptions:           config.ExtraOptions,
-				ShouldLoadCachedImages: viper.GetBool(cacheImages),
-				CNI:                    chosenCNI,
-				NodePort:               viper.GetInt(apiServerPort),
-			},
-			MultiNodeRequested: viper.GetInt(nodes) > 1,
-		}
-		cc.VerifyComponents = interpretWaitFlag(*cmd)
-		if viper.GetBool(createMount) && driver.IsKIC(drvName) {
-			cc.ContainerVolumeMounts = []string{viper.GetString(mountString)}
-		}
-		cnm, err := cni.New(cc)
-		if err != nil {
-			return cc, config.Node{}, errors.Wrap(err, "cni")
-		}
-
-		if _, ok := cnm.(cni.Disabled); !ok {
-			klog.Infof("Found %q CNI - setting NetworkPlugin=cni", cnm)
-			cc.KubernetesConfig.NetworkPlugin = "cni"
-		}
+	if err := validateCNI(cmd, &cc); err != nil {
+		return cc, config.Node{}, err
 	}
 
 	klog.Infof("config:\n%+v", cc)
@@ -413,6 +277,171 @@ func generateClusterConfig(cmd *cobra.Command, existing *config.ClusterConfig, k
 		kubeNodeName = "m01"
 	}
 	return createNode(cc, kubeNodeName, existing)
+}
+
+func initNewClusterConfig(cmd *cobra.Command, k8sVersion string, drvName string) config.ClusterConfig {
+	checkNumaCount(k8sVersion)
+
+	cc := config.ClusterConfig{
+		Name:                    ClusterFlagValue(),
+		KeepContext:             viper.GetBool(keepContext),
+		EmbedCerts:              viper.GetBool(embedCerts),
+		MinikubeISO:             viper.GetString(isoURL),
+		KicBaseImage:            viper.GetString(kicBaseImage),
+		Network:                 viper.GetString(network),
+		Memory:                  getMemorySize(cmd, drvName),
+		CPUs:                    viper.GetInt(cpus),
+		DiskSize:                getDiskSize(),
+		Driver:                  drvName,
+		HyperkitVpnKitSock:      viper.GetString(vpnkitSock),
+		HyperkitVSockPorts:      viper.GetStringSlice(vsockPorts),
+		NFSShare:                viper.GetStringSlice(nfsShare),
+		NFSSharesRoot:           viper.GetString(nfsSharesRoot),
+		DockerEnv:               config.DockerEnv,
+		DockerOpt:               config.DockerOpt,
+		InsecureRegistry:        insecureRegistry,
+		RegistryMirror:          registryMirror,
+		HostOnlyCIDR:            viper.GetString(hostOnlyCIDR),
+		HypervVirtualSwitch:     viper.GetString(hypervVirtualSwitch),
+		HypervUseExternalSwitch: viper.GetBool(hypervUseExternalSwitch),
+		HypervExternalAdapter:   viper.GetString(hypervExternalAdapter),
+		KVMNetwork:              viper.GetString(kvmNetwork),
+		KVMQemuURI:              viper.GetString(kvmQemuURI),
+		KVMGPU:                  viper.GetBool(kvmGPU),
+		KVMHidden:               viper.GetBool(kvmHidden),
+		DisableDriverMounts:     viper.GetBool(disableDriverMounts),
+		UUID:                    viper.GetString(uuid),
+		NoVTXCheck:              viper.GetBool(noVTXCheck),
+		DNSProxy:                viper.GetBool(dnsProxy),
+		HostDNSResolver:         viper.GetBool(hostDNSResolver),
+		HostOnlyNicType:         viper.GetString(hostOnlyNicType),
+		NatNicType:              viper.GetString(natNicType),
+		StartHostTimeout:        viper.GetDuration(waitTimeout),
+		ExposedPorts:            viper.GetStringSlice(ports),
+		SSHIPAddress:            viper.GetString(sshIPAddress),
+		SSHUser:                 viper.GetString(sshSSHUser),
+		SSHKey:                  viper.GetString(sshSSHKey),
+		SSHPort:                 viper.GetInt(sshSSHPort),
+		VerifyComponents:        interpretWaitFlag(*cmd),
+		KubernetesConfig: config.KubernetesConfig{
+			KubernetesVersion:      k8sVersion,
+			ClusterName:            ClusterFlagValue(),
+			Namespace:              viper.GetString(startNamespace),
+			APIServerName:          viper.GetString(apiServerName),
+			APIServerNames:         apiServerNames,
+			APIServerIPs:           apiServerIPs,
+			DNSDomain:              viper.GetString(dnsDomain),
+			FeatureGates:           viper.GetString(featureGates),
+			ContainerRuntime:       viper.GetString(containerRuntime),
+			CRISocket:              viper.GetString(criSocket),
+			NetworkPlugin:          viper.GetString(networkPlugin),
+			ServiceCIDR:            viper.GetString(serviceCIDR),
+			ImageRepository:        getRepository(cmd, k8sVersion),
+			ExtraOptions:           config.ExtraOptions,
+			ShouldLoadCachedImages: viper.GetBool(cacheImages),
+			CNI:                    getCNIConfig(cmd),
+			NodePort:               viper.GetInt(apiServerPort),
+		},
+		MultiNodeRequested: viper.GetInt(nodes) > 1,
+	}
+
+	if viper.GetBool(createMount) && driver.IsKIC(drvName) {
+		cc.ContainerVolumeMounts = []string{viper.GetString(mountString)}
+	}
+
+	return cc
+}
+
+func getMemorySize(cmd *cobra.Command, drvName string) int {
+	sysLimit, containerLimit, err := memoryLimits(drvName)
+	if err != nil {
+		klog.Warningf("Unable to query memory limits: %+v", err)
+	}
+
+	mem := suggestMemoryAllocation(sysLimit, containerLimit, viper.GetInt(nodes))
+	if cmd.Flags().Changed(memory) {
+		var err error
+		mem, err = pkgutil.CalculateSizeInMB(viper.GetString(memory))
+		if err != nil {
+			exit.Message(reason.Usage, "Generate unable to parse memory '{{.memory}}': {{.error}}", out.V{"memory": viper.GetString(memory), "error": err})
+		}
+		if driver.IsKIC(drvName) && mem > containerLimit {
+			exit.Message(reason.Usage, "{{.driver_name}} has only {{.container_limit}}MB memory but you specified {{.specified_memory}}MB", out.V{"container_limit": containerLimit, "specified_memory": mem, "driver_name": driver.FullName(drvName)})
+		}
+	} else {
+		validateRequestedMemorySize(mem, drvName)
+		klog.Infof("Using suggested %dMB memory alloc based on sys=%dMB, container=%dMB", mem, sysLimit, containerLimit)
+	}
+
+	return mem
+}
+
+func getDiskSize() int {
+	diskSize, err := pkgutil.CalculateSizeInMB(viper.GetString(humanReadableDiskSize))
+	if err != nil {
+		exit.Message(reason.Usage, "Generate unable to parse disk size '{{.diskSize}}': {{.error}}", out.V{"diskSize": viper.GetString(humanReadableDiskSize), "error": err})
+	}
+
+	return diskSize
+}
+
+func getRepository(cmd *cobra.Command, k8sVersion string) string {
+	repository := viper.GetString(imageRepository)
+	mirrorCountry := strings.ToLower(viper.GetString(imageMirrorCountry))
+	if strings.ToLower(repository) == "auto" || (mirrorCountry != "" && repository == "") {
+		found, autoSelectedRepository, err := selectImageRepository(mirrorCountry, semver.MustParse(strings.TrimPrefix(k8sVersion, version.VersionPrefix)))
+		if err != nil {
+			exit.Error(reason.InetRepo, "Failed to check main repository and mirrors for images", err)
+		}
+
+		if !found {
+			if autoSelectedRepository == "" {
+				exit.Message(reason.InetReposUnavailable, "None of the known repositories are accessible. Consider specifying an alternative image repository with --image-repository flag")
+			} else {
+				out.WarningT("None of the known repositories in your location are accessible. Using {{.image_repository_name}} as fallback.", out.V{"image_repository_name": autoSelectedRepository})
+			}
+		}
+
+		repository = autoSelectedRepository
+	}
+
+	if cmd.Flags().Changed(imageRepository) || cmd.Flags().Changed(imageMirrorCountry) {
+		out.Step(style.Success, "Using image repository {{.name}}", out.V{"name": repository})
+	}
+
+	return repository
+}
+
+func getCNIConfig(cmd *cobra.Command) string {
+	// Backwards compatibility with --enable-default-cni
+	chosenCNI := viper.GetString(cniFlag)
+	if viper.GetBool(enableDefaultCNI) && !cmd.Flags().Changed(cniFlag) {
+		klog.Errorf("Found deprecated --enable-default-cni flag, setting --cni=bridge")
+		chosenCNI = "bridge"
+	}
+	return chosenCNI
+}
+
+func validateCNI(cmd *cobra.Command, cc *config.ClusterConfig) error {
+	// networkPlugin cni deprecation warning
+	if cmd.Flags().Changed(networkPlugin) && viper.GetString(networkPlugin) == "cni" {
+		out.WarningT("With --network-plugin=cni, you will need to provide your own CNI. See --cni flag as a user-friendly alternative")
+	}
+
+	if !(driver.IsKIC(cc.Driver) || driver.IsKVM(cc.Driver)) && viper.GetString(network) != "" {
+		out.WarningT("--network flag is only valid with the docker/podman drivers, it will be ignored")
+	}
+
+	cnm, err := cni.New(*cc)
+	if err != nil {
+		return errors.Wrap(err, "cni")
+	}
+
+	if _, ok := cnm.(cni.Disabled); !ok {
+		klog.Infof("Found %q CNI - setting NetworkPlugin=cni", cnm)
+		cc.KubernetesConfig.NetworkPlugin = "cni"
+	}
+	return nil
 }
 
 func checkNumaCount(k8sVersion string) {
